@@ -1,15 +1,14 @@
 import os
 import random
-
-from torch.utils.data import Dataset
-from typing import Optional, Sequence, Callable
 import pandas as pd
+
+from typing import Optional, Sequence, Callable
 from PIL import Image
+from torch.utils.data import Dataset
 
 # TODO: Once I decided on metadata format, which is only needed when
 # I want to take metadata info into acount, I should implement 
 # return metadata if exists in __getitem__
-
 class LabeledDataset(Dataset):
     def __init__(
         self,

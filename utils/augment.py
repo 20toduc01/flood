@@ -8,13 +8,11 @@
 # where ... means an arbitrary number of leading dimensions.
 
 import math
-from enum import Enum
-from typing import List, Tuple, Optional, Dict
-
 import PIL
 import torch
 import torchvision.transforms as T
 
+from typing import List, Tuple, Optional, Dict
 from torch import Tensor
 from torchvision.transforms import functional as F, InterpolationMode
 

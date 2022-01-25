@@ -1,103 +1,111 @@
-import wandb
-
-from data_utils.augment import TrivialAugmentWide
-
-WANDB = True
-
-if WANDB:
-    wandb.init(project="my-test-project", entity="toduck15hl")
-
+import logging
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import torchvision.transforms as T
 
 from tqdm import tqdm
 
-from models import EMA, create_efficientnet_b1, create_efficientnet_b2, create_resnet18
-from utils import AverageMeter, BinaryFocalLossWithLogits
-from data_utils import LabeledDataset, UnlabaledDataset, \
-    RandAugment, WeakAugment, Cutout
-from models.lr_scheduler import cosine_scheduler_by_step
+from models import EMA, create_resnet18
+from utils.general import AverageMeter, load_yaml
+from utils.focal_loss import BinaryFocalLossWithLogits
+from utils.dataset import LabeledDataset
+from utils.augment import RandAugment, WeakAugment, TrivialAugmentWide, Cutout
 from models.utils import split_parameters
 
 
-def train(device='cuda'):
-    # Model
-    model = create_resnet18(num_class=1, pretrained=True)
-    # model = EMA(model, decay=0.9999)
+logger = logging.Logger(__name__)
 
-    # Train data and loader
-    augment_strong = T.Compose([
+
+def train():
+    r"""
+    Aside from the options in the config file, some parameters are hard-coded
+    and need to be changed manually:
+    - Resnet18 baseline
+    - Augmentation policy
+    - BCE loss
+    - SGD optimizer
+    - Cosine annealing scheduler
+    """
+    # Load options
+    opt = load_yaml('config.yaml')
+    device = 'cuda' if opt['cuda'] else 'cpu'
+    use_wandb = opt['wandb']
+    epochs = opt['epochs']
+    batch_size = opt['batch_size']
+    val_step = opt['val_step']
+    use_ema = opt['ema']
+    workers = opt['workers']
+    sgd = opt['sgd']
+    use_scheduler = opt['scheduler']
+    
+    # Wandb logging
+    if use_wandb:
+        import wandb
+        wandb.init(project="my-test-project", entity="toduck15hl")
+
+    # Model
+    model = create_resnet18(output_nodes=1, pretrained=True)
+    if use_ema:
+        model = EMA(model, decay=0.9999)
+    model = model.to(device)
+    model.train()
+
+    # Augmentation policy
+    augment = [
         TrivialAugmentWide(),
         T.ToTensor(),
         T.Resize((224, 224)),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         # Cutout(n_holes=1, length=64)
-    ])
+    ]
 
-    s_set = LabeledDataset("./data/dev/images", transforms=augment_strong)
-    # u_set = UnlabaledDataset("./U/images", transforms=[augment_weak, augment_strong]) # Manually apply transform later
-    val_set = LabeledDataset("./data/val/images", transforms=T.Compose([
-        T.ToTensor(),
-        T.Resize((224, 224)),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ]))
+    # Datasets
+    s_set = LabeledDataset("./data/dev/images", transforms=T.Compose(augment))
+    val_set = LabeledDataset("./data/val/images", transforms=T.Compose(augment[1:]))
+
+    # Dataloaders
     s_loader = torch.utils.data.DataLoader(
         s_set,
-        batch_size=32,
+        batch_size=batch_size,
         shuffle=True,
-        num_workers=4
+        num_workers=workers
     )
     val_loader = torch.utils.data.DataLoader(
         val_set,
         batch_size=32,
         shuffle=False,
-        num_workers=1
+        num_workers=workers
     )
-    # u_loader = torch.utils.data.DataLoader(
-    #     u_set,
-    #     batch_size=56,
-    #     shuffle=True,
-    #     num_workers=2
-    # )
-
-    epochs = 120
 
     # Optimizer
     decay_params, no_decay_params = split_parameters(model)
     optimizer = torch.optim.SGD(
         [
-            {'params': decay_params, 'weight_decay': 0.0001},
+            {'params': decay_params, 'weight_decay': sgd['decay']},
             {'params': no_decay_params, 'weight_decay': 0.0}
         ],
-        lr=0.001, momentum=0.9, nesterov=True
+        lr=sgd['lr'], momentum=sgd['momentum'], nesterov=sgd['nesterov']
     )
+
+    # Scheduler
+    if use_scheduler:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    # Loss
+    # criterion = torch.nn.CrossEntropyLoss(torch.Tensor([0.3, 0.7]).to(device))
+    # criterion = BinaryFocalLossWithLogits(alpha=0.7, gamma=2)
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([2.]).to(device))
 
     # Grad scaler for AMP
     scaler = torch.cuda.amp.GradScaler(init_scale=2**14) # Prevents early overflow
 
-    num_steps = len(s_loader) * epochs
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-
-    # criterion = torch.nn.CrossEntropyLoss(torch.Tensor([0.3, 0.7]).to(device))
-    # criterion = BinaryFocalLossWithLogits(alpha=0.7, gamma=2)
-    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([2.]).to(device))
-    # criterion2 = torch.nn.CrossEntropyLoss(torch.Tensor([0.36, 0.64]), reduction='sum').to(device)
-    model = model.to(device)
-    model.train()
-
-    cur_step = 0
-
     for ep in tqdm(range(1, epochs + 1)):
         epoch_loss = AverageMeter()
         for batch in tqdm(s_loader):
-            cur_step += 1
             # Draw a batch of labeled samples
             x_S, y_S = batch
 
+            # AMP training
             with torch.cuda.amp.autocast():
-                # Labeled loss
                 x_S = x_S.to(device)
                 y_S = y_S.to(device)
                 pred_S = model(x_S)
@@ -106,17 +114,19 @@ def train(device='cuda'):
             scaler.scale(loss_S).backward()
             scaler.step(optimizer)
             scaler.update()
-            
             model.zero_grad(set_to_none=True)
             
+            # Track metrics
             epoch_loss.update(loss_S.item())
 
-        scheduler.step()
+        # LR scheduler
+        if use_scheduler:
+            scheduler.step()
         
-        log_info = {"loss": epoch_loss.avg}
+        log_info = {'loss': epoch_loss.avg}
 
-        if ep % 5 == 0 or ep == 1:
-            print(f"Saving checkpoint at ep {ep}")
+        if ep % val_step == 0:
+            logger.INFO(f"Saving checkpoint at ep {ep}")
             val_loss = AverageMeter()
             torch.save(model.state_dict(), f"./weights/model_{ep}.pth")
             model.eval()
@@ -130,10 +140,10 @@ def train(device='cuda'):
                         pred = model(x_val)
                         loss = criterion(pred, y_val.unsqueeze(1).float())
                     val_loss.update(loss.item())
-                log_info["val_loss"] = val_loss.avg
+                log_info['val_loss'] = val_loss.avg
             model.train()
 
-        if WANDB:
+        if use_wandb:
                 wandb.log(log_info)
 
     return model

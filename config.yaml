@@ -1,0 +1,24 @@
+---
+  # General
+  cuda: true
+  wandb: true
+  epochs: 120
+  batch_size: 32
+  val_step: 5
+  ema: false
+  workers: 4
+
+  train_path: ./data/val/images
+  val_path: ./data/dev/images
+  test_path: null
+
+  sgd:
+    lr: 0.001
+    momentum: 0.9
+    nesterov: true
+    decay: 0.0001
+  
+  scheduler: true
+
+  # BCE loss weight
+  pos_weight: 2.0

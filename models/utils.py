@@ -1,6 +1,7 @@
 import torch
 from ptflops import get_model_complexity_info
 
+
 def model_summary(model: torch.nn.Module):
     with torch.cuda.device(0):
         macs, params = get_model_complexity_info(

@@ -9,7 +9,7 @@ from torch import nn
 from torch import Tensor
 
 
-logger = logging.Logger(__name__, logging.INFO)
+logger = logging.Logger(__name__)
 
 
 class EMA(nn.Module):

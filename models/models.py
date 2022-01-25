@@ -16,10 +16,10 @@ def create_efficientnet_b2(num_class: int, pretrained: bool = False):
     return model
 
 
-def create_resnet18(num_class: int, pretrained: bool = False):
+def create_resnet18(output_nodes: int, pretrained: bool = False):
     # Ideal input size: (224, 224)
     model = models.resnet18(pretrained=pretrained)
-    model.fc = nn.Linear(512, num_class)
+    model.fc = nn.Linear(512, output_nodes)
     return model
 
 
