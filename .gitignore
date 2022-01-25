@@ -132,3 +132,8 @@ data/*
 data/
 old/
 trash/
+wandb/
+weights/
+*.pt
+*.pth
+*.csv
