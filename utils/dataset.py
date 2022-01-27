@@ -61,7 +61,7 @@ class LabeledDataset(Dataset):
         return im, class_idx
 
 
-class UnlabaledDataset(Dataset):
+class UnlabeledDataset(Dataset):
     def __init__(
         self,
         folder_path: str = './data/test/images',
@@ -74,6 +74,8 @@ class UnlabaledDataset(Dataset):
         self.transforms = transforms
         if isinstance(transforms, list) and len(transforms) > 1:
             self.multi_transforms = True
+        else:
+            self.multi_transforms = False
         self.meta_path = meta_path
         if meta_path is not None:
             self.meta_df = pd.read_csv(meta_path)
@@ -147,7 +149,7 @@ def _test():
         ax.set_title("Flood" if gt == 1 else "No Flood")
     plt.show()
 
-    U = UnlabaledDataset(
+    U = UnlabeledDataset(
         folder_path='./data/U/images'
     )
 

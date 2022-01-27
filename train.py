@@ -37,11 +37,6 @@ def train():
     sgd = opt['sgd']
     use_scheduler = opt['scheduler']
     
-    # Wandb logging
-    if use_wandb:
-        import wandb
-        wandb.init(project="my-test-project", entity="toduck15hl")
-
     # Model
     model = create_resnet18(output_nodes=1, pretrained=True)
     if use_ema:
@@ -59,8 +54,21 @@ def train():
     ]
 
     # Datasets
-    s_set = LabeledDataset("./data/dev/images", transforms=T.Compose(augment))
-    val_set = LabeledDataset("./data/val/images", transforms=T.Compose(augment[1:]))
+    s_set = LabeledDataset(opt['train_path'], transforms=T.Compose(augment))
+    val_set = LabeledDataset(opt['val_path'], transforms=T.Compose(augment))
+
+    # Wandb logging
+    if use_wandb:
+        import wandb
+        wandb.init(project="my-test-project", entity="toduck15hl")
+        wandb.config.update(opt)
+        wandb.config.update({
+            'model': 'resnet18',
+            'loss': 'BCE',
+            'scheduler': 'CosineAnnealingLR',
+            'augment': 'TrivialAugmentWide',
+            'train_size': len(s_set),
+        }, allow_val_change=True)
 
     # Dataloaders
     s_loader = torch.utils.data.DataLoader(
@@ -71,7 +79,7 @@ def train():
     )
     val_loader = torch.utils.data.DataLoader(
         val_set,
-        batch_size=32,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=workers
     )
@@ -93,10 +101,15 @@ def train():
     # Loss
     # criterion = torch.nn.CrossEntropyLoss(torch.Tensor([0.3, 0.7]).to(device))
     # criterion = BinaryFocalLossWithLogits(alpha=0.7, gamma=2)
-    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([2.]).to(device))
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([opt['pos_weight']]).to(device))
 
     # Grad scaler for AMP
     scaler = torch.cuda.amp.GradScaler(init_scale=2**14) # Prevents early overflow
+
+    min_val_loss = float('inf')
+    max_val_prec = 0.
+    max_val_rec = 0.
+    max_val_acc = 0.
 
     for ep in tqdm(range(1, epochs + 1)):
         epoch_loss = AverageMeter()
@@ -125,22 +138,58 @@ def train():
         
         log_info = {'loss': epoch_loss.avg}
 
+        # Validation
         if ep % val_step == 0:
-            logger.INFO(f"Saving checkpoint at ep {ep}")
-            val_loss = AverageMeter()
-            torch.save(model.state_dict(), f"./weights/model_{ep}.pth")
+            preds = []
+            labels = []
+
             model.eval()
             
             with torch.no_grad():
                 for batch in tqdm(val_loader):
                     x_val, y_val = batch
                     x_val = x_val.to(device)
-                    y_val = y_val.to(device)
-                    with torch.cuda.amp.autocast():
-                        pred = model(x_val)
-                        loss = criterion(pred, y_val.unsqueeze(1).float())
-                    val_loss.update(loss.item())
-                log_info['val_loss'] = val_loss.avg
+                    y_val = y_val.to(device).unsqueeze(1).float()
+                    with torch.cuda.amp.autocast(): pred = model(x_val)
+                    preds.append(pred)
+                    labels.append(y_val)
+
+                # Concatenate
+                preds = torch.cat(preds, dim=0)
+                labels = torch.cat(labels, dim=0)
+
+                # Compute relevant metrics
+                loss = criterion(preds, labels).item()
+                preds = torch.sigmoid(preds).round()
+                acc = torch.mean((preds == labels).float())
+                TP = (preds*labels).sum().item()
+                predicted_positives = preds.sum().item()
+                if predicted_positives == 0:
+                    precision = 0.
+                else:
+                    precision = TP / (preds.sum().item())
+                recall = TP / (labels.sum().item())
+                
+                if (
+                    loss < min_val_loss or acc > max_val_acc \
+                    or precision > max_val_prec or recall > max_val_rec
+                ):
+                    if loss < min_val_loss:
+                        min_val_loss = loss
+                    if acc > max_val_acc:
+                        max_val_acc = acc
+                    if precision > max_val_prec:
+                        max_val_prec = precision
+                    if recall > max_val_rec:
+                        max_val_rec = recall
+
+                torch.save(model.state_dict(), f"./weights/model_{ep}.pth")
+
+                log_info['val_loss'] = loss
+                log_info['val_acc'] = acc.item()
+                log_info['val_precision'] = precision
+                log_info['val_recall'] = recall
+
             model.train()
 
         if use_wandb:

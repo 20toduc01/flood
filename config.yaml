@@ -4,21 +4,20 @@
   wandb: true
   epochs: 120
   batch_size: 32
-  val_step: 5
+  val_step: 1
   ema: false
   workers: 4
 
-  train_path: ./data/val/images
-  val_path: ./data/dev/images
-  test_path: null
+  train_path: ./data/dev/images
+  val_path: ./data/val/images
 
   sgd:
     lr: 0.001
     momentum: 0.9
     nesterov: true
-    decay: 0.0001
+    decay: 0.01
   
   scheduler: true
 
   # BCE loss weight
-  pos_weight: 2.0
+  pos_weight: 1.0
